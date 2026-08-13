@@ -4,5 +4,6 @@ __pycache__/
 .venv/
 node_modules/
 *.log
-.claude/
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
 .pytest_cache/

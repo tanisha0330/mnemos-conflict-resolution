@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "skills": {
+    "auditing-table-statistics": {
+      "source": "cockroachlabs/cockroachdb-skills",
+      "sourceType": "github",
+      "skillPath": "skills/cockroachdb-observability-and-diagnostics/auditing-table-statistics/SKILL.md",
+      "computedHash": "fd78594867ae91b9d0109b16caa3d23a59ef659f7abfa9522366f574ddf1d7a8"
+    },
+    "benchmarking-transaction-patterns": {
+      "source": "cockroachlabs/cockroachdb-skills",
+      "sourceType": "github",
+      "skillPath": "skills/cockroachdb-application-development/benchmarking-transaction-patterns/SKILL.md",
+      "computedHash": "cd7ca0f9e61af218898e1df4568c88fed2971b590135638e6078dd594b7b6d43"
+    },
+    "cockroachdb-sql": {
+      "source": "cockroachlabs/cockroachdb-skills",
+      "sourceType": "github",
+      "skillPath": "skills/cockroachdb-query-and-schema-design/cockroachdb-sql/SKILL.md",
+      "computedHash": "58ad5998f40f23961b6d504b1f3d586157b4c1c868bd3d1e706aa6dcc728a492"
+    },
+    "designing-application-transactions": {
+      "source": "cockroachlabs/cockroachdb-skills",
+      "sourceType": "github",
+      "skillPath": "skills/cockroachdb-application-development/designing-application-transactions/SKILL.md",
+      "computedHash": "ca6f7c795012ee06054222fd576ffea9b303816ca42e20cb3a9cf4aaacd87f68"
+    },
+    "profiling-statement-fingerprints": {
+      "source": "cockroachlabs/cockroachdb-skills",
+      "sourceType": "github",
+      "skillPath": "skills/cockroachdb-observability-and-diagnostics/profiling-statement-fingerprints/SKILL.md",
+      "computedHash": "8a302cb85c790b4af2c84e4ec4a740ec832679cdede3969556780b6cee5a06bd"
+    },
+    "profiling-transaction-fingerprints": {
+      "source": "cockroachlabs/cockroachdb-skills",
+      "sourceType": "github",
+      "skillPath": "skills/cockroachdb-observability-and-diagnostics/profiling-transaction-fingerprints/SKILL.md",
+      "computedHash": "92a2584939aaa0738e01e2da353336c2dc4ca4abdf199b8b51b83243f69f8db2"
+    },
+    "setting-up-local-cluster": {
+      "source": "cockroachlabs/cockroachdb-skills",
+      "sourceType": "github",
+      "skillPath": "skills/cockroachdb-onboarding-and-migrations/setting-up-local-cluster/SKILL.md",
+      "computedHash": "701447fbe26c4678a931b9bfeb5458683473e45d3db82409fd55ec58dabf76c7"
+    }
+  }
+}
