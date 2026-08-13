@@ -47,6 +47,47 @@ Agentic memory system with built-in conflict resolution, built on CockroachDB + 
 
    This checks CockroachDB connectivity, AWS credentials (via STS), and Bedrock model access, printing ✅/❌ for each with a fix hint on failure.
 
+## API usage
+
+```python
+from src.api.client import MnemosClient
+
+client = MnemosClient()  # uses DATABASE_URL from .env
+
+# add() runs the full pipeline: claim extraction -> embedding -> subject_key
+# assignment -> conflict detection -> rules/arbiter -> transactional commit
+client.add(
+    "Stripe: charge ch_1abc for order-12345 was refunded $49.99",
+    agent_id="payment-agent",
+    source_id=stripe_source_id,
+)
+
+# search() and get_all() return ONLY canonical beliefs by default - the
+# resolved, current answer, not every conflicting claim ever made
+client.search("refund status for order-12345", subject_key="refund_status:order-12345")
+# -> [Belief(status='canonical', claim_text='Refund for order-12345 has been processed...', ...)]
+
+# pass include_superseded=True to see the full picture, including what lost
+client.search("refund status for order-12345", subject_key="refund_status:order-12345", include_superseded=True)
+# -> also includes the superseded zendesk_tickets claim that was overruled
+
+client.get_all("refund_status:order-12345")               # canonical only
+client.get_all("refund_status:order-12345", include_superseded=True)  # everything
+
+# history() returns every belief for a subject with the resolution reasoning
+# that decided its fate, if any - the audit trail
+for entry in client.history("refund_status:order-12345"):
+    print(entry.belief.status, entry.belief.claim_text)
+    if entry.resolution:
+        print("  resolved because:", entry.resolution.reasoning)
+
+# as_of() answers "what did we believe at time T", via CockroachDB's
+# AS OF SYSTEM TIME - true time-travel, not a snapshot table
+from datetime import datetime, timezone
+client.as_of("refund_status:order-12345", datetime(2026, 8, 13, 15, 0, tzinfo=timezone.utc))
+# -> {"canonical": Belief(...) as it stood at that moment, "version": ...}
+```
+
 ## Project layout
 
 ```
