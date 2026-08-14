@@ -4,6 +4,75 @@
 
 ---
 
+## NEEDS HUMAN REVIEW
+
+## 2026-08-14 — Block 4B: the flagship demo conflict sometimes fails to trigger at all (real, reproduced twice)
+
+**This is the single most important thing in this log for you to look at before a live demo.**
+
+Walking `src/demo/app.py` end-to-end (via Streamlit's `AppTest`, which drives the actual app script and real button-click state transitions - not a mock) turned up a real, non-hypothetical reliability problem in the exact scenario CLAUDE.md names as the flagship demo: support-agent says "refund is still pending", payment-agent says "refund was processed" - the textbook case Stage 1 conflict detection is supposed to catch.
+
+**What happened:** ran the app's trigger flow twice. Run 1: worked exactly as intended - Stage 1 correctly classified the two claims as `CONFLICT`, Stage 2's authority-tier rule resolved it, Stripe's claim became canonical, Zendesk's was marked superseded with correct reasoning. Run 2, same code, same scenario, moments later: **the conflict was never detected at all.** Stage 1 classified payment-agent's claim as `NO_CONFLICT` (unrelated), so it was inserted as an independent, unlinked `candidate` belief - no resolution ever ran. Zendesk's stale "still pending" claim stayed canonical. Live memory state showed:
+```
+🕓 [candidate]  "...was processed."       (Stripe, tier 5)
+✅ [canonical]  "...is still pending."    (Zendesk, tier 3)
+```
+That's the wrong answer sitting as the system's canonical belief, silently.
+
+**Root cause, measured directly, not guessed:** computed real cosine similarity between the two claim embeddings for both runs:
+- Run 2's pair: **0.4938** similarity
+- A fresh third pair: **0.5431** similarity
+
+Stage 1's thresholds (`src/resolution/detection.py`) are `>0.9` duplicate, `<0.5` no-conflict, `[0.5, 0.9]` real conflict - these exact numbers come from the Block 1B build-doc prompt, not something I chose. **The real embedding similarity between "refund is pending" and "refund was processed" for the same order sits right on top of the 0.5 boundary**, with enough run-to-run variance (from `extract_claim_text()`'s LLM-paraphrased wording differing slightly each call) to land on either side unpredictably. A clear, unambiguous contradiction to any human reader is, to the embedding model, barely distinguishable from an unrelated claim.
+
+**Why I didn't just fix it myself:** 0.5/0.9 are literal values from the build-sequence doc's Block 1B prompt (`"If < 0.5, no conflict... If between 0.5 and 0.9, flag as a real conflict"`), not an implementation detail I get to silently retune - that's exactly the kind of undocumented judgment call CLAUDE.md says to flag rather than quietly resolve. This also isn't a bug in any one function; it's a property of how well Titan V2 embeddings separate this specific *kind* of claim pair (a status flip on an otherwise-identical sentence), which no amount of code review would have caught without actually running it for real, twice, and getting different outcomes.
+
+**What you should decide before demo day** (I did not implement any of these unprompted):
+1. Lower the no-conflict threshold (e.g. to 0.4) - straightforward, but is itself an unvalidated guess without more real measurements across many claim-pair types.
+2. Add a cheap deterministic supplement ahead of the embedding check specifically for same-subject status-word contradictions (e.g. "pending" vs "processed", "active" vs "cancelled") - more robust for this exact demo, less general.
+3. Make the demo's raw input text more contrastive/keyword-preserving so `extract_claim_text()` has less room to paraphrase away the signal - a demo-specific mitigation, doesn't fix the underlying threshold sensitivity.
+4. Accept the risk and re-run the demo trigger if it doesn't fire on the first click (workable for a live demo you control, not for an unattended one).
+
+I'd lead with a version of (2) or (3) if it were my call, but this is exactly the kind of decision that affects what you can honestly claim to judges about the system's reliability - flagging for you rather than picking one silently.
+
+---
+
+## 2026-08-14 — Block 4B checkpoint: walked the demo app end-to-end
+
+**Status: PASS on everything except the finding above.** No browser extension available this session, so I used Streamlit's `AppTest` framework instead - it runs the actual `src/demo/app.py` script and simulates real widget interactions (button clicks, selectbox changes) in-process, which is a genuine equivalent to clicking through it, not a weaker substitute. Confirmed, across two full runs:
+
+- Initial page load: correct empty state, correct button enablement, no exceptions.
+- Trigger button: both `client.add()` calls execute, "What happened" expanders show both agents' claims.
+- fulfillment-agent section: shows the canonical answer (when resolution succeeded) with the "does NOT issue a duplicate refund" message.
+- Live memory state: both beliefs listed with correct status icons and confidence.
+- Time-travel selectbox: all 3 labeled options present; switching to "before resolution" correctly showed the pre-conflict state (only Zendesk's claim existed yet).
+
+The one real problem found is the conflict-detection reliability issue logged above under NEEDS HUMAN REVIEW - everything else about the app itself (session state, rendering, the time-travel UI) held up under real, repeated interaction.
+
+---
+
+## 2026-08-14 — Block 4A: AWS deployment not verifiable by me (scoped decision, not an oversight)
+
+**What's blocked:** Block 4A's checkpoint — *"Delete and redeploy from scratch once to confirm the IaC is genuinely reproducible - this is exactly what judges test"* — requires an actual `cdk deploy`/`cdk destroy`/`cdk deploy` cycle against a real AWS account. I scoped this block to `cdk synth`-only (no live deploy) per your explicit answer to my clarifying question before this run started: the only AWS credentials available are the account **root user** (not a scoped role), and the spec's Fargate services are meant to be "long-running tasks" that would incur real unattended cost if left up.
+
+**What IS done and verified:** the CDK app (`infra/`) synthesizes cleanly — `cdk synth` exit code 0, 53 resources generated, including all 3 Fargate services/task-defs and 8 distinct least-privilege IAM roles (checked directly in the generated CloudFormation template, not assumed). So the IaC is at least *structurally* sound; what's unverified is whether it actually deploys and comes back up identically after a destroy/redeploy cycle, which only a real account can confirm.
+
+**Exactly what you need to do:** `infra/README.md` has the full deploy instructions, including this exact checkpoint (`cdk deploy` → `cdk destroy` → `cdk deploy` again, confirm it comes back up the same). Also flagged there: the Lambda handler is a stub (dependency packaging for `src/` as a Lambda layer wasn't attempted, since there's nothing to deploy it into), and the Fargate containers use a placeholder public image pending your actual agent image being pushed to ECR.
+
+---
+
+## 2026-08-14 — Block 4C checkpoint: failure demo watched live, twice — PASS
+
+**Status: genuinely done, not worked around.** The original spec offered two paths: a local multi-node cluster, or CockroachDB Cloud's failure simulation. Checked the second option directly rather than assuming: it exists, but only for CockroachDB **Advanced** tier (3+ nodes) — this project's real cluster is **Serverless**, confirmed via `crdb_internal` access being restricted (the literal multi-tenant restriction message). So neither the Cloud option nor Docker (unavailable this session) was viable — but the `setting-up-local-cluster` skill installed back in Block 1C turned out to be exactly the right tool: a genuine 3-node local cluster via the official `cockroach` binary, no Docker, no VM.
+
+Hit one Windows-specific snag getting it running (the skill's `--background` flag isn't supported on Windows builds - each node had to run as its own background process instead) and the same `psycopg2` UUID-adapter gap from Block 1A (this script uses raw `psycopg2.connect()`, needed its own `register_uuid()` call). Both fixed, then ran the actual checkpoint exactly as instructed: **watched the failure demo succeed twice, live**, restarting node 3 between runs. Both runs identical in shape - cluster kept serving throughout via the 2 surviving nodes, only the individual operations that tried to connect directly to the dead node's own address failed (expected), recovering on the very next operation. One real, unsmoothed observation: the first post-kill operation on a surviving node took ~5.5s instead of ~2s both times, consistent with Raft lease transfer for ranges the dead node held — not downtime, but a real latency blip worth knowing about. Full setup and both runs' raw output: `docs/failure-resilience.md`.
+
+Architecture diagram (`docs/architecture.md`, Mermaid) also done: ingestion → Stage 1/2 → arbiter → commit → retrieval API, with CockroachDB and AWS components labeled, cross-referencing the Block 2B transaction-boundary proof and the Block 4A IaC-only status directly in the diagram notes rather than repeating claims that might drift out of sync.
+
+Local cluster cleaned up after the demo (processes stopped); the downloaded binary and data directory remain at `~/.cockroachdb` outside the repo in case you want to re-verify.
+
+---
+
 ## 2026-08-14 — Block 1B checkpoint: hand-traced conflict examples
 
 **Status: PASS.** Ran `src/resolution/rules.apply_rules()` directly (not via tests) against three real/representative conflicts and read the outputs myself.
