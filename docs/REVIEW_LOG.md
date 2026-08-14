@@ -1,6 +1,26 @@
 # Review Log
 
-*(Top summary will be written last, once Block 5A is done — see bottom of this file for the running log as it's built.)*
+## Summary — read this first
+
+Autonomous run through the full build sequence, Block 1B → 5A (`docs/mnemos-build-sequence.md`). Block 1A was already done before this run started. Blocks 5B (demo video) and 5C (buffer) are yours, as instructed — I stopped after the Block 5A commit.
+
+**Fully done, tested against the real cluster (not mocked, except where noted):** conflict detection + deterministic rules (Block 1B), Agent Skills Repo integration + stress test (1C), Bedrock arbiter (2A), transactional commit with real 8-thread and 200-thread concurrency proofs (2B, 2C), naive-baseline comparison against a real local Postgres instance (2C), ingestion pipeline (3A), retrieval API incl. real `AS OF SYSTEM TIME` time-travel (3B), consolidation/decay (3C), a real Streamlit demo app driven via `AppTest` (4B), a real node-failure demo against a genuine local 3-node cluster watched twice live (4C), an architecture diagram (4C), and a README tested from an actual fresh clone (5A). AWS infrastructure is written and `cdk synth`-validated (4A) but deliberately not deployed — see below.
+
+**Genuinely blocked / needs your decision, ranked by how much it should worry you before demo day:**
+
+1. **[Highest risk] The flagship demo conflict sometimes never fires at all.** Running the exact CLAUDE.md refund scenario twice through the real Streamlit app, the second run silently failed to detect the conflict — Stage 1's real cosine similarity between "refund is pending" and "refund was processed" for the same order measured **0.49 and 0.54** across two pairs, straddling the spec'd 0.5 no-conflict threshold almost exactly. If this happens live, the whole demo's centerpiece moment just doesn't happen, with no error, no warning — the stale claim silently stays canonical. Full detail and options (none implemented without your say-so, since 0.5/0.9 are literal spec'd values) in the Block 4B entry below. **Test this yourself, more than twice, before you trust it live.**
+
+2. **[High risk] "The LLM resolves conflicts" is not quite accurate as built.** Stage 2's rules resolve every case where authority tiers differ *before* the arbiter is ever reached — so the arbiter only ever sees equal-authority conflicts, and CLAUDE.md's own rule ("equal authority → `needs_human=true`") means it can never autonomously commit a resolution. Every real LLM-arbitrated conflict ends up `contested`, pending a human. If your pitch to judges says the LLM resolves ambiguous cases, the accurate version is "the LLM recommends a resolution for a human to confirm." Decide deliberately how you want to frame this. The Block 2A entry below has the full reasoning and confirms it's a direct, literal reading of CLAUDE.md's own rules, not a bug.
+
+3. **[Bounded, actionable] AWS deployment is unverified.** `infra/` synthesizes cleanly (53 resources, least-privilege IAM throughout, checked directly) but was never actually deployed — scoped that way because the only AWS credentials here are the account root user and Fargate services left running would cost money unattended. The specific checkpoint judges are said to test ("delete and redeploy from scratch") needs you to actually run it once. `infra/README.md` has the exact commands.
+
+4. **[Minor, known gap] `resolutions` has no row for arbiter "neither" outcomes.** `winner_belief_id`/`loser_belief_id` are `NOT NULL` in the Block 1A schema; a true "neither" verdict (which happened twice in real Block 2A testing) has no valid pair to store, so only the belief-status flip is recorded, not a reasoning row. If "full reasoning always kept for audit" is a claim in your submission, this is the one case it doesn't quite cover yet.
+
+5. **[Cosmetic] Model substitution.** CLAUDE.md names "Claude 3.5 Haiku" as the arbiter fallback; that exact model isn't enabled on this AWS account, so `anthropic.claude-haiku-4-5-20251001-v1:0` is used instead throughout. Only matters if your submission text names "3.5" specifically.
+
+**Minor cleanup, not urgent:** a throwaway local PostgreSQL instance (port 5434, `C:\Users\dell\pgdata-mnemos-baseline`) and a local 3-node CockroachDB cluster's binary/data (`~/.cockroachdb`) are still on disk from Blocks 2C and 4C. Both are outside the repo and harmless to leave, safe to delete whenever.
+
+Everything below this line is the full, dated, block-by-block log — every checkpoint, every real bug found and fixed, in the order it happened.
 
 ---
 
