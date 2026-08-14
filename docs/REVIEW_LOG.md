@@ -73,6 +73,21 @@ Local cluster cleaned up after the demo (processes stopped); the downloaded bina
 
 ---
 
+## 2026-08-14 — Block 5A checkpoint: README tested from a real fresh clone
+
+**Status: PASS.** `git clone .` into a scratch directory (a genuine second checkout, not the working copy) and walked the README's setup steps for real:
+
+1. `python -m venv .venv` + `pip install -r requirements.txt` — clean install, no errors, every dependency resolved from the committed `requirements.txt` alone.
+2. Copied `.env` (this project's real credentials, since a hackathon judge would use their own but the *instructions* are what's being tested) and ran `python scripts/verify_setup.py` — all 3 checks passed (CockroachDB, AWS STS, 44 matching Bedrock models).
+3. `python -m src.schema.migrate` — correctly reported "No pending migrations," confirming the idempotency claim from Block 1A is still true after 7 migrations.
+4. Did **not** re-run `python -m src.schema.seed` against the shared live cluster: `seed.py`'s source names are fixed literals (`stripe_api`, `zendesk_tickets`, etc.) under a `UNIQUE` constraint, so a second run against already-seeded data would correctly fail with an integrity error — expected behavior for a one-time demo seeder, not a setup-instructions bug, but worth knowing: **these instructions assume a genuinely empty database**, which is true for any judge's own fresh cluster but not for a repeated run against this same shared one.
+
+**Positioning section:** rewritten in first-person engineering voice, not lifted from CLAUDE.md's bullet points — deliberately includes an "honest version of this pitch" paragraph acknowledging what mnemos *isn't* claiming, since a positioning table alone reads as marketing regardless of how accurate it is.
+
+**One thing corrected while writing "Built With," not left as an unverified inherited claim:** CLAUDE.md's stack section lists "Managed MCP Server (connected)" as one of the 3 CockroachDB tools used. Checked directly — no `.mcp.json`, no MCP config referencing CockroachDB anywhere in this project. It was never actually wired into the shipped code. Removed from the README's claims rather than repeated uncritically; **Distributed Vector Indexing** and **Agent Skills Repo** are both genuinely, verifiably used (the vector index is load-bearing throughout; two of the installed skills directly informed real code, not just decoration), which still clears the "2+ tools" eligibility bar honestly.
+
+---
+
 ## 2026-08-14 — Block 1B checkpoint: hand-traced conflict examples
 
 **Status: PASS.** Ran `src/resolution/rules.apply_rules()` directly (not via tests) against three real/representative conflicts and read the outputs myself.
