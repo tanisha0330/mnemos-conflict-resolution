@@ -180,6 +180,19 @@ def arbitrate(
     have equal authority_tier, regardless of what the model itself reports -
     this is an application-level guarantee (CLAUDE.md "Escalate, don't
     force"), not just a prompt instruction the model might not follow.
+
+    One deliberate, flagged exception to the equal-authority forcing: a
+    "refinement" verdict at model confidence >= CONFIDENCE_ESCALATION_THRESHOLD
+    (and the model itself not requesting a human) is allowed to autonomously
+    commit even under equal authority. Refinement is structurally
+    non-destructive - the newer claim adds detail without asserting the older
+    one was wrong, so nothing is being overwritten on a guess the way a
+    contradiction/temporal_shift/both_valid verdict would be. Real Bedrock
+    testing (20 live calls across all 4 verdict types, see docs/REVIEW_LOG.md
+    Known Problem #2) showed every equal-authority call landing on
+    needs_human=True purely from this rule, at confidence >=0.80 in every
+    case - this exception was a deliberate decision, not a silent loosening
+    of "escalate, don't force" for its own sake.
     """
     client = client or _get_client()
     primary_model_id = primary_model_id or os.environ.get("BEDROCK_ARBITER_MODEL_ID")
@@ -196,11 +209,18 @@ def arbitrate(
             raw, attempts = result
             total_attempts += attempts
             equal_authority = arb_input.claim_a.authority_tier == arb_input.claim_b.authority_tier
-            needs_human = (
-                bool(raw["needs_human"])
-                or float(raw["confidence"]) < CONFIDENCE_ESCALATION_THRESHOLD
-                or equal_authority
+            model_flagged_human = bool(raw["needs_human"])
+            model_confident = float(raw["confidence"]) >= CONFIDENCE_ESCALATION_THRESHOLD
+
+            # Equal authority normally forces escalation, but a confident,
+            # non-destructive "refinement" verdict is a deliberate exception -
+            # see the arbitrate() docstring.
+            is_autonomous_refinement = (
+                raw["verdict"] == "refinement" and model_confident and not model_flagged_human
             )
+            equal_authority_needs_escalation = equal_authority and not is_autonomous_refinement
+
+            needs_human = model_flagged_human or not model_confident or equal_authority_needs_escalation
             return ArbiterDecision(
                 winner=raw["winner"],
                 verdict=raw["verdict"],

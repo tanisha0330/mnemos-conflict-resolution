@@ -83,6 +83,50 @@ def test_no_escalation_when_confident_and_unequal_authority():
     assert decision.needs_human is False
 
 
+# --- refinement exception to the equal-authority forced escalation ------------
+# See docs/REVIEW_LOG.md Known Problem #2: refinement is structurally
+# non-destructive (adds detail, doesn't assert the older claim was wrong), so
+# a confident refinement verdict is allowed to autonomously commit even under
+# equal authority. Every other verdict type keeps the forced escalation.
+
+def test_confident_refinement_with_equal_authority_does_not_escalate():
+    client = MagicMock()
+    client.converse.return_value = tool_response(
+        valid_decision(verdict="refinement", winner="B", confidence=0.9, needs_human=False)
+    )
+    decision = arbitrate(make_input(tier_a=3, tier_b=3), client=client, primary_model_id="model-x")
+    assert decision.needs_human is False
+    assert decision.verdict == "refinement"
+
+
+def test_low_confidence_refinement_with_equal_authority_still_escalates():
+    client = MagicMock()
+    client.converse.return_value = tool_response(
+        valid_decision(verdict="refinement", winner="B", confidence=0.5, needs_human=False)
+    )
+    decision = arbitrate(make_input(tier_a=3, tier_b=3), client=client, primary_model_id="model-x")
+    assert decision.needs_human is True
+
+
+def test_refinement_with_equal_authority_still_escalates_if_model_flags_human():
+    client = MagicMock()
+    client.converse.return_value = tool_response(
+        valid_decision(verdict="refinement", winner="B", confidence=0.9, needs_human=True)
+    )
+    decision = arbitrate(make_input(tier_a=3, tier_b=3), client=client, primary_model_id="model-x")
+    assert decision.needs_human is True
+
+
+@pytest.mark.parametrize("verdict", ["contradiction", "temporal_shift", "both_valid"])
+def test_non_refinement_verdicts_still_escalate_on_equal_authority_even_confident(verdict):
+    client = MagicMock()
+    client.converse.return_value = tool_response(
+        valid_decision(verdict=verdict, winner="B", confidence=0.95, needs_human=False)
+    )
+    decision = arbitrate(make_input(tier_a=3, tier_b=3), client=client, primary_model_id="model-x")
+    assert decision.needs_human is True
+
+
 # --- retry on malformed output -------------------------------------------------
 
 def test_retries_on_malformed_then_succeeds():
