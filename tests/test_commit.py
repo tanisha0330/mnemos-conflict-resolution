@@ -2,6 +2,7 @@ import threading
 import uuid
 from datetime import datetime, timezone
 
+import psycopg2.errors
 import pytest
 
 from src.resolution.commit import CommitResult, StaleResolutionError, commit_contested, commit_resolution
@@ -134,11 +135,11 @@ def test_commit_contested_with_winner_marks_both_contested(migrated_db):
         conn.close()
 
 
-def test_commit_contested_without_winner_skips_resolutions_row(migrated_db):
-    """The arbiter's winner="neither" case: no resolutions row can be inserted
-    (winner_belief_id/loser_belief_id are NOT NULL) - both beliefs still get
-    marked contested, but nothing is fabricated into the audit trail."""
-    subject_key = f"test:commit:contested-neither:{uuid.uuid4()}"
+def test_commit_contested_with_no_decision_metadata_skips_resolutions_row(migrated_db):
+    """A bare mark-contested call with no decision behind it at all (no
+    subject_key/verdict/etc) - both beliefs still get marked contested, but
+    there's nothing meaningful to record, so no resolutions row is written."""
+    subject_key = f"test:commit:contested-no-metadata:{uuid.uuid4()}"
     conn = get_connection(migrated_db)
     try:
         with conn.cursor() as cur:
@@ -152,6 +153,74 @@ def test_commit_contested_without_winner_skips_resolutions_row(migrated_db):
             cur.execute("SELECT status FROM beliefs WHERE id IN (%s, %s)", (belief_a, belief_b))
             statuses = {r[0] for r in cur.fetchall()}
             assert statuses == {"contested"}
+    finally:
+        conn.close()
+
+
+def test_commit_contested_neither_verdict_writes_resolutions_row_with_null_winner(migrated_db):
+    """The real arbiter winner="neither" case (Known Problem #4): decision
+    metadata exists (subject_key/verdict/reasoning/method/confidence) but
+    there's no winner/loser pair. Migration 0008 made winner_belief_id/
+    loser_belief_id nullable specifically so this case still gets a full
+    audit-trail row instead of being silently dropped."""
+    subject_key = f"test:commit:contested-neither-verdict:{uuid.uuid4()}"
+    conn = get_connection(migrated_db)
+    try:
+        with conn.cursor() as cur:
+            belief_a, belief_b = _insert_subject_with_two_candidates(cur, subject_key)
+        conn.commit()
+
+        result = commit_contested(
+            migrated_db, belief_a, belief_b, subject_key=subject_key,
+            winner_belief_id=None, loser_belief_id=None,
+            verdict="contradiction", reasoning="Neither claim could be verified as correct.",
+            method="llm", confidence=0.4,
+        )
+        assert result.resolution_id is not None
+
+        with conn.cursor() as cur:
+            cur.execute("SELECT status FROM beliefs WHERE id IN (%s, %s)", (belief_a, belief_b))
+            statuses = {r[0] for r in cur.fetchall()}
+            assert statuses == {"contested"}
+
+            cur.execute(
+                "SELECT winner_belief_id, loser_belief_id, verdict, reasoning, method, confidence "
+                "FROM resolutions WHERE id = %s",
+                (result.resolution_id,),
+            )
+            row = cur.fetchone()
+            assert row[0] is None
+            assert row[1] is None
+            assert row[2] == "contradiction"
+            assert row[3] == "Neither claim could be verified as correct."
+            assert row[4] == "llm"
+            assert row[5] == 0.4
+    finally:
+        conn.close()
+
+
+def test_resolutions_check_constraint_rejects_mismatched_winner_loser(migrated_db):
+    """DB-level guarantee behind the fix: winner and loser must be both-null
+    or both-set, so a half-filled row (a real bug, not a legitimate outcome)
+    is rejected by the schema itself, not just application code."""
+    subject_key = f"test:commit:constraint-check:{uuid.uuid4()}"
+    conn = get_connection(migrated_db)
+    try:
+        with conn.cursor() as cur:
+            belief_a, belief_b = _insert_subject_with_two_candidates(cur, subject_key)
+        conn.commit()
+
+        with pytest.raises(psycopg2.errors.CheckViolation):
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO resolutions
+                        (id, subject_key, winner_belief_id, loser_belief_id, verdict, reasoning, method, confidence, resolved_at)
+                    VALUES (gen_random_uuid(), %s, %s, NULL, 'contradiction', 'x', 'llm', 0.9, now())
+                    """,
+                    (subject_key, belief_a),
+                )
+        conn.rollback()
     finally:
         conn.close()
 

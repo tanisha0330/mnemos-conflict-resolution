@@ -10,10 +10,10 @@ Two paths:
     and explicit retry on SQLSTATE 40001.
   - commit_contested(): the escalation path (needs_human=True) - marks both
     conflicting beliefs 'contested' without promoting either to canonical.
-    See the docstring on commit_contested for a real schema gap this exposed
-    (resolutions.winner_belief_id/loser_belief_id are NOT NULL, which can't
-    represent an arbiter "neither" outcome) - flagged in docs/REVIEW_LOG.md,
-    not silently worked around.
+    Writes a resolutions row (with nullable winner/loser, migration 0008)
+    whenever decision metadata is available, including the arbiter's
+    winner="neither" case - see the docstring on commit_contested and
+    docs/REVIEW_LOG.md Known Problem #4 for the schema gap this used to be.
 """
 
 import random
@@ -146,16 +146,19 @@ def commit_contested(
     'contested' without promoting either to canonical or touching
     subjects.canonical_belief_id/version - nothing is confirmed yet.
 
-    Schema gap, flagged rather than worked around silently: resolutions.
-    winner_belief_id and loser_belief_id are NOT NULL in the Block 1A schema.
-    The arbiter can genuinely return winner="neither" (observed in real,
-    non-mocked Bedrock calls during the Block 2A checkpoint - see
-    docs/REVIEW_LOG.md), which has no valid (winner, loser) pair to store.
-    Rather than fabricate a winner or silently redesign the schema, this
-    function only inserts a resolutions row when winner_belief_id and
-    loser_belief_id are both provided (i.e. the arbiter picked A or B, just
-    not confidently enough to auto-commit); for a true "neither" outcome it
-    marks both beliefs contested and returns without a resolutions row.
+    Schema note: resolutions.winner_belief_id/loser_belief_id are nullable
+    (migration 0008_resolutions_nullable_winner_loser.sql), with a CHECK
+    that they're both-null or both-set. This closes a real gap: the arbiter
+    can genuinely return winner="neither" (observed in real, non-mocked
+    Bedrock calls during the Block 2A checkpoint - see docs/REVIEW_LOG.md
+    Known Problem #4), which has no (winner, loser) pair to store. Rather
+    than fabricate a winner, a resolutions row is now written whenever
+    decision metadata (subject_key/verdict/reasoning/method/confidence) is
+    available - with NULL winner/loser for a true "neither" outcome - so the
+    verdict and reasoning are never lost, only the belief-status flip
+    previously was. Callers with no decision metadata at all (just marking
+    two beliefs contested, no arbiter/rules decision behind it) still get no
+    resolutions row, since there'd be nothing meaningful to record.
     """
     for attempt in range(1, max_retries + 1):
         conn = get_connection(database_url)
@@ -164,7 +167,7 @@ def commit_contested(
                 cur.execute("UPDATE beliefs SET status = 'contested' WHERE id IN (%s, %s)", (belief_a_id, belief_b_id))
 
                 resolution_id = None
-                if winner_belief_id is not None and loser_belief_id is not None:
+                if subject_key is not None and verdict is not None:
                     resolution_id = uuid.uuid4()
                     cur.execute(
                         """
