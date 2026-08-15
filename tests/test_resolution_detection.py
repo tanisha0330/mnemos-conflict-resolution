@@ -18,12 +18,12 @@ def test_similarity_exactly_0_9_is_conflict_not_duplicate():
     assert classify_similarity(0.9) == DetectionOutcome.CONFLICT
 
 
-def test_similarity_below_0_5_is_no_conflict():
-    assert classify_similarity(0.4999999) == DetectionOutcome.NO_CONFLICT
+def test_similarity_below_0_4_is_no_conflict():
+    assert classify_similarity(0.3999999) == DetectionOutcome.NO_CONFLICT
 
 
-def test_similarity_exactly_0_5_is_conflict_not_no_conflict():
-    assert classify_similarity(0.5) == DetectionOutcome.CONFLICT
+def test_similarity_exactly_0_4_is_conflict_not_no_conflict():
+    assert classify_similarity(0.4) == DetectionOutcome.CONFLICT
 
 
 def test_similarity_between_bounds_is_conflict():
@@ -116,6 +116,6 @@ def test_detect_conflict_no_conflict_for_orthogonal_embedding(migrated_db):
         unrelated_embedding = _make_embedding(np.random.default_rng(999))
         result = detect_conflict(conn, subject_key, unrelated_embedding)
         assert result.outcome == DetectionOutcome.NO_CONFLICT
-        assert result.similarity < 0.5
+        assert result.similarity < 0.4
     finally:
         conn.close()

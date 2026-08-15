@@ -91,7 +91,7 @@ def _writer_embedding(base: np.ndarray, writer_index: int) -> list[float]:
     orth = rng.standard_normal(EMBEDDING_DIM)
     orth -= (orth @ base) * base
     orth /= np.linalg.norm(orth)
-    similarity = 0.7  # inside the [0.5, 0.9] "real conflict" band
+    similarity = 0.7  # inside the [0.4, 0.9] "real conflict" band
     v = similarity * base + np.sqrt(1 - similarity**2) * orth
     return (v / np.linalg.norm(v)).tolist()
 

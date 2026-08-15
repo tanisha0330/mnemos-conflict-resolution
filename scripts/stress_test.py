@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 
 import numpy as np
 
+from src.resolution.detection import DUPLICATE_THRESHOLD, NO_CONFLICT_THRESHOLD
 from src.resolution.pipeline import PipelineOutcome, evaluate_new_belief
 from src.resolution.rules import RuleCandidate
 from src.schema.db import get_connection
@@ -120,13 +121,15 @@ def run_stress_test(database_url: str | None = None) -> dict:
                 ["conflict", "duplicate", "no_conflict"],
                 p=[CONFLICT_WEIGHT, DUPLICATE_WEIGHT, NO_CONFLICT_WEIGHT],
             )
+            # ranges derived from the real Stage 1 thresholds (src/resolution/detection.py)
+            # so this stays correct if those thresholds ever change, instead of drifting stale.
             if category == "conflict":
-                similarity_target = float(rng.uniform(0.5, 0.9))
+                similarity_target = float(rng.uniform(NO_CONFLICT_THRESHOLD, DUPLICATE_THRESHOLD))
                 embedding = _blend(state["base"], state["orth"], similarity_target)
             elif category == "duplicate":
-                embedding = _blend(state["base"], state["orth"], float(rng.uniform(0.91, 0.999)))
+                embedding = _blend(state["base"], state["orth"], float(rng.uniform(DUPLICATE_THRESHOLD + 0.01, 0.999)))
             else:
-                embedding = _blend(state["base"], state["orth"], float(rng.uniform(0.0, 0.49)))
+                embedding = _blend(state["base"], state["orth"], float(rng.uniform(0.0, NO_CONFLICT_THRESHOLD - 0.01)))
 
             source_id, tier = sources[rng.integers(0, len(sources))]
             confidence = float(rng.uniform(0.2, 0.99))

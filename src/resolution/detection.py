@@ -10,7 +10,7 @@ from enum import Enum
 from uuid import UUID
 
 DUPLICATE_THRESHOLD = 0.9
-NO_CONFLICT_THRESHOLD = 0.5
+NO_CONFLICT_THRESHOLD = 0.4
 
 
 class DetectionOutcome(str, Enum):
@@ -28,7 +28,7 @@ class DetectionResult:
 
 
 def classify_similarity(similarity: float) -> DetectionOutcome:
-    """>0.9 duplicate, <0.5 no conflict, [0.5, 0.9] (inclusive both ends) is a real conflict."""
+    """>0.9 duplicate, <0.4 no conflict, [0.4, 0.9] (inclusive both ends) is a real conflict."""
     if similarity > DUPLICATE_THRESHOLD:
         return DetectionOutcome.DUPLICATE
     if similarity < NO_CONFLICT_THRESHOLD:
