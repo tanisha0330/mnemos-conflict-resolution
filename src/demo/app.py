@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src.api.client import MnemosClient
 from src.schema.db import get_connection
+from src.verification.ledger import upsert_refund_status
 
 STATUS_ICONS = {"canonical": "✅", "superseded": "❌", "candidate": "🕓", "contested": "⚠️"}
 
@@ -83,6 +84,16 @@ with col1:
     st.subheader("1. Trigger the conflict")
     trigger_disabled = st.session_state.subject_key is not None
     if st.button("▶ Send conflicting claims", disabled=trigger_disabled):
+        # Real ground-truth record, independent of either agent's claim -
+        # what mnemos checks directly instead of only weighing the two
+        # claims against each other by authority tier. See
+        # src/resolution/verification.py.
+        conn = get_connection()
+        try:
+            upsert_refund_status(conn, st.session_state.order_id, "processed", 49.99)
+        finally:
+            conn.close()
+
         with st.spinner("support-agent reading Zendesk ticket..."):
             support_result = client.add(
                 f"Zendesk ticket: customer says refund for order-{st.session_state.order_id} is still pending",

@@ -187,6 +187,14 @@ def seed(database_url: str | None = None) -> dict:
                 """,
                 resolution,
             )
+            # Real ground-truth ledger record for order-12345 (see
+            # src/resolution/verification.py) - confirms the same outcome the
+            # authority_tier rule already reached, so a fresh conflict on this
+            # order would now resolve via ledger verification instead.
+            cur.execute(
+                "INSERT INTO payment_ledger (order_id, refund_status, amount, updated_at) VALUES (%s, %s, %s, %s)",
+                ("12345", "processed", 49.99, now - timedelta(minutes=30)),
+            )
         conn.commit()
         return {"sources": len(sources), "subjects": len(subjects), "beliefs": len(beliefs), "resolutions": 1}
     finally:

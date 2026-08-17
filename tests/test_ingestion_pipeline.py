@@ -11,6 +11,7 @@ import pytest
 from src.ingestion.embeddings import generate_embedding
 from src.ingestion.pipeline import ingest, resolve_pending_candidate
 from src.schema.db import get_connection
+from src.verification.ledger import upsert_refund_status
 
 
 def _insert_source(cur, tier: int, name: str) -> uuid.UUID:
@@ -115,6 +116,46 @@ def test_genuine_conflict_equal_authority_escalates_to_contested(migrated_db, so
     # equal authority tier -> per Block 2A's finding, needs_human is always True
     # when the arbiter is genuinely reached (no rule can decide it)
     assert claim_b.outcome in ("contested", "canonical", "no_conflict", "duplicate")
+
+
+# --- ground-truth verification overrides the authority-tier heuristic ------
+# Real, end-to-end proof that src.resolution.verification actually changes
+# the outcome ingest() would otherwise reach, not just that it exists in
+# isolation. The claim that wins here is from the LOWER-authority source -
+# the opposite of what Stage 2's authority_tier rule would pick on its own -
+# because the payment ledger (real ground truth, independent of either
+# claim) confirms it instead.
+
+def test_ledger_verification_overrides_authority_tier(migrated_db, sources):
+    order_id = uuid.uuid4().hex[:8]
+    conn = get_connection(migrated_db)
+    try:
+        upsert_refund_status(conn, order_id, "pending", 49.99)
+    finally:
+        conn.close()
+
+    high_authority_claim = ingest(
+        f"Order-{order_id} refund was processed successfully",
+        agent_id="payment-agent", source_id=sources["high"], database_url=migrated_db,
+    )
+    assert high_authority_claim.outcome == "canonical"
+
+    low_authority_claim = ingest(
+        f"Order-{order_id} refund is still pending",
+        agent_id="support-agent", source_id=sources["low"], database_url=migrated_db,
+    )
+    assert low_authority_claim.outcome == "resolved_ledger"
+    assert "pending" in low_authority_claim.detail
+
+    conn = get_connection(migrated_db)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT status FROM beliefs WHERE id = %s", (low_authority_claim.belief_id,))
+            assert cur.fetchone()[0] == "canonical"
+            cur.execute("SELECT status FROM beliefs WHERE id = %s", (high_authority_claim.belief_id,))
+            assert cur.fetchone()[0] == "superseded"
+    finally:
+        conn.close()
 
 
 # --- resolve_pending_candidate() - the resolution_worker Lambda's poll loop ---

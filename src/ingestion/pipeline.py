@@ -27,6 +27,7 @@ from src.resolution.arbiter import ArbiterClaim, ArbiterInput, arbitrate
 from src.resolution.commit import commit_contested, commit_resolution
 from src.resolution.pipeline import PipelineOutcome, evaluate_new_belief
 from src.resolution.rules import RuleCandidate, RuleOutcome
+from src.resolution.verification import verify_against_ledger
 from src.schema.db import get_connection
 
 DEFAULT_EXTRACTED_CONFIDENCE = 0.85
@@ -37,7 +38,7 @@ class IngestResult:
     belief_id: uuid.UUID | None
     subject_key: str
     claim_text: str
-    outcome: str  # "canonical" | "duplicate" | "no_conflict" | "resolved_rule" | "resolved_llm" | "contested"
+    outcome: str  # "canonical" | "duplicate" | "no_conflict" | "resolved_ledger" | "resolved_rule" | "resolved_llm" | "contested"
     detail: str | None = None
 
 
@@ -132,8 +133,27 @@ def ingest(
 
         existing_belief_id = detection.canonical_belief_id
         existing_claim = _load_belief_for_arbiter(conn, existing_belief_id)
+        # Ground-truth check ahead of the heuristic rules/arbiter: for a
+        # verifiable-transaction subject with a real ledger record, actual
+        # verified state outranks a proxy for trust (authority tier), not
+        # just tiebreaks it. Falls through (decided=False) for everything
+        # else - see src/resolution/verification.py for why that's safe to
+        # run unconditionally.
+        verification = verify_against_ledger(conn, subject_key, existing_claim.claim_text, claim_text)
     finally:
         conn.close()
+
+    if verification.decided:
+        if verification.winner == "new":
+            winner, loser = belief_id, existing_belief_id
+        else:
+            winner, loser = existing_belief_id, belief_id
+        commit_resolution(
+            database_url, subject_key, expected_version,
+            winner_belief_id=winner, loser_belief_id=loser,
+            verdict="contradiction", reasoning=verification.reason, method="ledger_verification", confidence=1.0,
+        )
+        return IngestResult(belief_id, subject_key, claim_text, "resolved_ledger", verification.reason)
 
     if detection.outcome == PipelineOutcome.RULE_DECIDED:
         if detection.rule_outcome == RuleOutcome.NEW_WINS:
@@ -275,8 +295,24 @@ def resolve_pending_candidate(belief_id: uuid.UUID, database_url: str | None = N
 
         existing_belief_id = detection.canonical_belief_id
         existing_claim = _load_belief_for_arbiter(conn, existing_belief_id)
+        # Ground-truth check ahead of the heuristic rules/arbiter - see the
+        # matching comment in ingest()'s conflict branch and
+        # src/resolution/verification.py.
+        verification = verify_against_ledger(conn, subject_key, existing_claim.claim_text, claim_text)
     finally:
         conn.close()
+
+    if verification.decided:
+        if verification.winner == "new":
+            winner, loser = belief_id, existing_belief_id
+        else:
+            winner, loser = existing_belief_id, belief_id
+        commit_resolution(
+            database_url, subject_key, expected_version,
+            winner_belief_id=winner, loser_belief_id=loser,
+            verdict="contradiction", reasoning=verification.reason, method="ledger_verification", confidence=1.0,
+        )
+        return IngestResult(belief_id, subject_key, claim_text, "resolved_ledger", verification.reason)
 
     if detection.outcome == PipelineOutcome.RULE_DECIDED:
         if detection.rule_outcome == RuleOutcome.NEW_WINS:
