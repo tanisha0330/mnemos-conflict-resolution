@@ -10,3 +10,5 @@ node_modules/
 infra/cdk.out/
 infra/.cdk.staging/
 infra/cdk.context.json
+infra/.build/
+infra/lambda_layer/python/

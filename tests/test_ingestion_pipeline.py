@@ -4,10 +4,12 @@ real DB writes against the live cluster. Deliberately not mocked - this is
 the same "test against reality" bar the Block 2A/2B/2C checkpoints used."""
 
 import uuid
+from datetime import datetime, timezone
 
 import pytest
 
-from src.ingestion.pipeline import ingest
+from src.ingestion.embeddings import generate_embedding
+from src.ingestion.pipeline import ingest, resolve_pending_candidate
 from src.schema.db import get_connection
 
 
@@ -113,3 +115,84 @@ def test_genuine_conflict_equal_authority_escalates_to_contested(migrated_db, so
     # equal authority tier -> per Block 2A's finding, needs_human is always True
     # when the arbiter is genuinely reached (no rule can decide it)
     assert claim_b.outcome in ("contested", "canonical", "no_conflict", "duplicate")
+
+
+# --- resolve_pending_candidate() - the resolution_worker Lambda's poll loop ---
+# Regression coverage for a real bug caught during the infra/README.md Lambda
+# deploy checkpoint: unlike ingest()'s embeddings (always fresh from
+# generate_embedding(), never round-tripped through the DB), this is the
+# first code path that re-reads an embedding back out of `beliefs` with
+# register_vector() active - which hands back a pgvector Vector object, not a
+# plain list. detect_conflict()'s list(new_embedding) raised TypeError on a
+# real Vector (no __iter__) until _load_pending_candidate normalized it via
+# .to_list(). Every real "candidate" backlog item in the live cluster hit
+# this at deploy time (see docs/REVIEW_LOG.md) - not a hypothetical case.
+
+def _insert_candidate_belief(cur, belief_id, subject_key, claim_text, embedding, source_id, confidence=0.9):
+    cur.execute(
+        """
+        INSERT INTO beliefs (id, subject_key, claim_text, embedding, agent_id, source_id, confidence, observed_at, status)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'candidate')
+        """,
+        (belief_id, subject_key, claim_text, embedding, "verify-agent", source_id, confidence, datetime.now(timezone.utc)),
+    )
+
+
+def test_resolve_pending_candidate_promotes_when_no_canonical_exists(migrated_db, sources):
+    subject_key = f"resolve-worker-test:{uuid.uuid4().hex[:8]}"
+    belief_id = uuid.uuid4()
+    embedding = generate_embedding("The warehouse manager at site-9 is Alice Chen.")
+
+    conn = get_connection(migrated_db)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO subjects (subject_key, canonical_belief_id, version, volatility, updated_at) "
+                "VALUES (%s, NULL, 1, 'stable', now())",
+                (subject_key,),
+            )
+            _insert_candidate_belief(cur, belief_id, subject_key, "site-9 manager is Alice Chen", embedding, sources["high"])
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = resolve_pending_candidate(belief_id, database_url=migrated_db)
+    assert result.outcome == "canonical"
+
+    conn = get_connection(migrated_db)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT status FROM beliefs WHERE id = %s", (belief_id,))
+            assert cur.fetchone()[0] == "canonical"
+            cur.execute("SELECT canonical_belief_id FROM subjects WHERE subject_key = %s", (subject_key,))
+            assert cur.fetchone()[0] == belief_id
+    finally:
+        conn.close()
+
+
+def test_resolve_pending_candidate_reevaluates_against_real_canonical_without_crashing(migrated_db, sources):
+    """The actual regression case: a real canonical belief already exists (so
+    evaluate_new_belief -> detect_conflict runs and calls list() on the
+    fetched embedding), and the pending candidate's own embedding was also
+    read back out of the DB via register_vector() - exactly the Vector round
+    trip that crashed before the fix. Outcome isn't pinned down (depends on
+    real embedding similarity), the crash-vs-no-crash is the point."""
+    order_id = uuid.uuid4().hex[:8]
+    canonical = ingest(
+        f"Order-{order_id} refund was processed successfully",
+        agent_id="payment-agent", source_id=sources["high"], database_url=migrated_db,
+    )
+    assert canonical.outcome == "canonical"
+
+    belief_id = uuid.uuid4()
+    embedding = generate_embedding(f"Order-{order_id} refund is still pending")
+    conn = get_connection(migrated_db)
+    try:
+        with conn.cursor() as cur:
+            _insert_candidate_belief(cur, belief_id, canonical.subject_key, f"Order-{order_id} refund is still pending", embedding, sources["low"])
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = resolve_pending_candidate(belief_id, database_url=migrated_db)
+    assert result.outcome in ("duplicate", "no_conflict", "resolved_rule", "canonical")

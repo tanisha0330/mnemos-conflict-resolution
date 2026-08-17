@@ -9,6 +9,7 @@ Fargate services left running would incur unattended cost) and for the exact
 steps to deploy and verify reproducibility yourself.
 """
 
+import shutil
 from pathlib import Path
 
 from aws_cdk import (
@@ -26,7 +27,35 @@ from aws_cdk import aws_logs as logs
 from aws_cdk import aws_s3 as s3
 from constructs import Construct
 
-LAMBDA_SRC_DIR = str(Path(__file__).parent / "lambda_src" / "resolution_worker")
+INFRA_DIR = Path(__file__).parent
+REPO_ROOT = INFRA_DIR.parent
+LAMBDA_LAYER_DIR = str(INFRA_DIR / "lambda_layer")
+
+DB_SECRET_ID = "mnemos/database-url"
+
+
+def _stage_resolution_worker_code() -> str:
+    """The handler imports `from src.ingestion.pipeline import ...`, so the
+    function's deployment package needs handler.py sitting next to a real
+    copy of this repo's src/ package (dependencies are shipped separately as
+    a Lambda layer - see LAMBDA_LAYER_DIR - not bundled here). Staged fresh
+    on every synth into infra/.build/ (gitignored) rather than checked in,
+    since it's a generated copy, not a source of truth."""
+    staging_dir = INFRA_DIR / ".build" / "resolution_worker"
+    if staging_dir.exists():
+        shutil.rmtree(staging_dir)
+    staging_dir.mkdir(parents=True)
+
+    shutil.copy2(
+        INFRA_DIR / "lambda_src" / "resolution_worker" / "handler.py",
+        staging_dir / "handler.py",
+    )
+    shutil.copytree(
+        REPO_ROOT / "src",
+        staging_dir / "src",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    return str(staging_dir)
 
 # Least-privilege: scope Bedrock access to exactly the two models this
 # project uses (from .env), not "bedrock:*" on "*".
@@ -53,7 +82,7 @@ class MnemosStack(Stack):
         # --- Secret placeholder for DATABASE_URL (not populated by this stack -
         # deploy-time concern, kept out of source control same as .env) ---
         self.db_secret_arn_param = self.node.try_get_context("database_url_secret_arn") or (
-            f"arn:aws:secretsmanager:{self.region}:{self.account}:secret:mnemos/database-url-*"
+            f"arn:aws:secretsmanager:{self.region}:{self.account}:secret:{DB_SECRET_ID}-*"
         )
 
         # --- Lambda: resolution worker, invoked on a schedule (see handler.py
@@ -80,15 +109,34 @@ class MnemosStack(Stack):
             resources=[self.db_secret_arn_param],
         ))
 
+        dependencies_layer = lambda_.LayerVersion(
+            self, "ResolutionWorkerDependencies",
+            # Pre-built via `pip install --platform manylinux2014_x86_64
+            # --only-binary=:all: --target infra/lambda_layer/python ...`
+            # (see infra/README.md) - no Docker required since every dep
+            # here ships a manylinux wheel; boto3 is deliberately excluded,
+            # the Lambda Python 3.12 runtime already provides it.
+            code=lambda_.Code.from_asset(LAMBDA_LAYER_DIR),
+            compatible_runtimes=[lambda_.Runtime.PYTHON_3_12],
+            description="psycopg2/pgvector/SQLAlchemy/dotenv/certifi for the resolution worker",
+        )
+
         self.resolution_worker = lambda_.Function(
             self, "ResolutionWorker",
             runtime=lambda_.Runtime.PYTHON_3_12,
             handler="handler.handler",
-            # plain zip asset, no Docker bundling - deployment-time TODO:
-            # package src/ + its deps as a Lambda layer, see handler.py
-            code=lambda_.Code.from_asset(LAMBDA_SRC_DIR),
+            code=lambda_.Code.from_asset(_stage_resolution_worker_code()),
+            layers=[dependencies_layer],
+            # POLL_LIMIT=20, not the handler's own default 50: real backlog
+            # timing (see docs/REVIEW_LOG.md) measured ~1-2s/candidate, so 50
+            # risked exceeding even this raised timeout under a batch with
+            # several arbiter (Bedrock) calls in it. Safe either way -
+            # resolve_pending_candidate() only ever touches its own belief
+            # row per iteration, so a mid-batch timeout just leaves the rest
+            # for the next scheduled poll, not a partial/incorrect write.
+            environment={"DB_SECRET_ID": DB_SECRET_ID, "POLL_LIMIT": "20"},
             role=resolution_worker_role,
-            timeout=Duration.seconds(60),
+            timeout=Duration.seconds(120),
             memory_size=256,
             log_retention=logs.RetentionDays.TWO_WEEKS,
         )
