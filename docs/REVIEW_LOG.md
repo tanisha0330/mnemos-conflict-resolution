@@ -323,6 +323,8 @@ All 20/20 real calls: confidence ≥ 0.80 (threshold is 0.6), model's own `needs
 
 **Not done, flagged rather than silently glossed over:** CLAUDE.md's own principles text states the equal-authority rule as an unconditional blanket ("If arbiter confidence < 0.6, or both sources have equal authority, mark status='contested'"). That text is now slightly stale against this one narrow exception. Didn't edit CLAUDE.md itself (it's the user's personal global config, outside this repo) — flagging here instead so the user can decide whether to update it.
 
+**[UPDATE 2026-08-17]** User decided to update it. CLAUDE.md's "Escalate, don't force" principle now states the exception explicitly (refinement verdict, confidence >= 0.6, model's own `needs_human` False, only under equal authority) and keeps the default posture unconditional for `contradiction`/`temporal_shift`/`both_valid`, so it can't be misread as a general loosening later. That file lives outside this repo (`~/.claude/CLAUDE.md`, not under git), so the edit itself isn't a commit in this repository — this log entry is.
+
 ---
 
 ## 2026-08-15 — Fix for Known Problem #4: audit trail for "neither" verdicts
