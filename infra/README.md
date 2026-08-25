@@ -124,10 +124,21 @@ actual agent image, pushed to ECR, is still a real TODO, not done in this pass.
 
 The EventBridge rule polls **every 1 minute** and will keep mutating real rows in
 whatever database `mnemos/database-url` points at for as long as the stack is
-deployed - including any shared/demo dataset. If you don't want that running
-unattended before a live demo, either scale the schedule down
-(`events.Schedule.rate(Duration.hours(...))`), disable the rule
-(`aws events disable-rule`), or `cdk destroy` when not actively verifying it.
+deployed and the rule is enabled - including any shared/demo dataset.
+
+**The rule is now off by default** (`poll_enabled` CDK context, defaults to
+`False`) so a plain `cdk deploy` does not start unattended polling. Turn it on
+only for the window you're actually demoing:
+
+```
+cdk deploy -c poll_enabled=true    # before the demo
+cdk deploy                         # after - flips the rule back off
+```
+
+You can also flip it without a redeploy (`aws events disable-rule` /
+`enable-rule` on `ResolutionWorkerScheduleRule...`), or scale the schedule down
+(`events.Schedule.rate(Duration.hours(...))`) in `mnemos_stack.py` if 1 minute
+is finer-grained than you need even during a demo.
 
 ## Verifying reproducibility
 

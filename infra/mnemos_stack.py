@@ -141,10 +141,16 @@ class MnemosStack(Stack):
             log_retention=logs.RetentionDays.TWO_WEEKS,
         )
 
+        # Off by default: an always-on 1-minute poll against the live shared
+        # cluster is a real recurring cost/write-load for a demo stack that
+        # may sit deployed between sessions. Turn it on only for the window
+        # you're actually demoing: `cdk deploy -c poll_enabled=true`.
+        poll_enabled = self.node.try_get_context("poll_enabled") in (True, "true", "True")
         poll_rule = events.Rule(
             self, "ResolutionWorkerScheduleRule",
             schedule=events.Schedule.rate(Duration.minutes(1)),
             description="Polls for unresolved candidate beliefs (outbox pattern - see handler.py)",
+            enabled=poll_enabled,
         )
         poll_rule.add_target(targets.LambdaFunction(self.resolution_worker))
 
