@@ -1,0 +1,20 @@
+{
+  "attribute_keywords": {
+    "shipping_carrier": ["shipped via", "carrier is", "fedex", "ups ", "usps", "dhl"],
+    "shipping_address": ["shipping address", "ship to", "delivery address"],
+    "refund_status": ["refund"],
+    "subscription_status": ["subscription"],
+    "user_email": ["email"],
+    "stock_status": ["in stock", "out of stock", "inventory level"],
+    "tracking_number": ["tracking number", "tracking id"],
+    "payment_status": ["payment was", "charge was", "charged $", "payment status"],
+    "delivery_date": ["delivery date", "arrive by", "estimated arrival", "eta"],
+    "order_status": ["order status", "order was cancelled", "order was canceled", "order is cancelled"]
+  },
+  "entity_patterns": {
+    "order": "\\border[-_ #]?(\\w[\\w-]*)",
+    "user": "\\buser[-_ #]?(\\w[\\w-]*)",
+    "sku": "\\bsku[-_ #]?(\\w[\\w-]*)",
+    "ticket": "\\bticket[-_ #]?(\\w[\\w-]*)"
+  }
+}

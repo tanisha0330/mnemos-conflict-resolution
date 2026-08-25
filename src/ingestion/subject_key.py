@@ -4,34 +4,41 @@ identify both an attribute category and an entity id. Getting this wrong
 silently breaks conflict detection downstream (two claims about the same
 real thing land under different subject_keys and never get compared) - see
 docs/REVIEW_LOG.md for the Block 3A checkpoint spot-check.
+
+The attribute keywords and entity id patterns are domain knowledge, not
+logic, so they live in a JSON config (src/ingestion/domains/*.json) instead
+of this file. A different industry deployment points
+SUBJECT_KEY_DOMAIN_CONFIG at its own config file - same shape, its own
+attributes/entities - without touching this module. Defaults to the
+bundled ecommerce.json (the demo domain) when unset.
 """
 
+import json
 import os
 import re
+from pathlib import Path
 
 import boto3
 
-# Checked in order - more specific phrases first, so e.g. "shipped via FedEx"
-# doesn't fall into a generic order-status bucket.
-ATTRIBUTE_KEYWORDS: dict[str, list[str]] = {
-    "shipping_carrier": ["shipped via", "carrier is", "fedex", "ups ", "usps", "dhl"],
-    "shipping_address": ["shipping address", "ship to", "delivery address"],
-    "refund_status": ["refund"],
-    "subscription_status": ["subscription"],
-    "user_email": ["email"],
-    "stock_status": ["in stock", "out of stock", "inventory level"],
-    "tracking_number": ["tracking number", "tracking id"],
-    "payment_status": ["payment was", "charge was", "charged $", "payment status"],
-    "delivery_date": ["delivery date", "arrive by", "estimated arrival", "eta"],
-    "order_status": ["order status", "order was cancelled", "order was canceled", "order is cancelled"],
-}
+_DEFAULT_DOMAIN_CONFIG_PATH = Path(__file__).parent / "domains" / "ecommerce.json"
 
-ENTITY_PATTERNS: list[tuple[str, re.Pattern]] = [
-    ("order", re.compile(r"\border[-_ #]?(\w[\w-]*)", re.IGNORECASE)),
-    ("user", re.compile(r"\buser[-_ #]?(\w[\w-]*)", re.IGNORECASE)),
-    ("sku", re.compile(r"\bsku[-_ #]?(\w[\w-]*)", re.IGNORECASE)),
-    ("ticket", re.compile(r"\bticket[-_ #]?(\w[\w-]*)", re.IGNORECASE)),
-]
+
+def _load_domain_config(path: str | Path | None = None) -> tuple[dict[str, list[str]], list[tuple[str, re.Pattern]]]:
+    config_path = Path(path or os.environ.get("SUBJECT_KEY_DOMAIN_CONFIG") or _DEFAULT_DOMAIN_CONFIG_PATH)
+    data = json.loads(config_path.read_text())
+
+    # Checked in order - more specific phrases first, so e.g. "shipped via FedEx"
+    # doesn't fall into a generic order-status bucket. JSON objects preserve
+    # key insertion order (Python 3.7+), so the config file's ordering holds.
+    attribute_keywords = data["attribute_keywords"]
+    entity_patterns = [
+        (entity_type, re.compile(pattern, re.IGNORECASE))
+        for entity_type, pattern in data["entity_patterns"].items()
+    ]
+    return attribute_keywords, entity_patterns
+
+
+ATTRIBUTE_KEYWORDS, ENTITY_PATTERNS = _load_domain_config()
 
 SUBJECT_KEY_TOOL = {
     "toolSpec": {
