@@ -62,8 +62,10 @@ def verify_against_ledger(conn, subject_key: str, existing_claim_text: str, new_
 
 def _register_builtin_verifiers() -> None:
     from src.verification.ledger import verify_refund_status
+    from src.verification.shipment_ledger import verify_shipping_carrier
 
     register_verifier("refund_status", verify_refund_status)
+    register_verifier("shipping_carrier", verify_shipping_carrier)
 
 
 _register_builtin_verifiers()

@@ -12,6 +12,7 @@ from src.ingestion.embeddings import generate_embedding
 from src.ingestion.pipeline import ingest, resolve_pending_candidate
 from src.schema.db import get_connection
 from src.verification.ledger import upsert_refund_status
+from src.verification.shipment_ledger import upsert_shipment_carrier
 
 
 def _insert_source(cur, tier: int, name: str) -> uuid.UUID:
@@ -146,6 +147,42 @@ def test_ledger_verification_overrides_authority_tier(migrated_db, sources):
     )
     assert low_authority_claim.outcome == "resolved_ledger"
     assert "pending" in low_authority_claim.detail
+
+    conn = get_connection(migrated_db)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT status FROM beliefs WHERE id = %s", (low_authority_claim.belief_id,))
+            assert cur.fetchone()[0] == "canonical"
+            cur.execute("SELECT status FROM beliefs WHERE id = %s", (high_authority_claim.belief_id,))
+            assert cur.fetchone()[0] == "superseded"
+    finally:
+        conn.close()
+
+
+def test_shipment_ledger_verification_overrides_authority_tier(migrated_db, sources):
+    # Same shape as test_ledger_verification_overrides_authority_tier above,
+    # but for the second registered verifier (shipping_carrier) - proves the
+    # registry, not just the refund case, actually overrides the heuristic
+    # rules end-to-end through the real pipeline.
+    order_id = uuid.uuid4().hex[:8]
+    conn = get_connection(migrated_db)
+    try:
+        upsert_shipment_carrier(conn, order_id, "ups")
+    finally:
+        conn.close()
+
+    high_authority_claim = ingest(
+        f"Order-{order_id} shipped via FedEx",
+        agent_id="fulfillment-agent", source_id=sources["high"], database_url=migrated_db,
+    )
+    assert high_authority_claim.outcome == "canonical"
+
+    low_authority_claim = ingest(
+        f"Order-{order_id} shipped via UPS",
+        agent_id="support-agent", source_id=sources["low"], database_url=migrated_db,
+    )
+    assert low_authority_claim.outcome == "resolved_ledger"
+    assert "ups" in low_authority_claim.detail
 
     conn = get_connection(migrated_db)
     try:
