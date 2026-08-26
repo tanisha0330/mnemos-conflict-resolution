@@ -24,7 +24,7 @@ from src.ingestion.claim_extraction import extract_claim_text
 from src.ingestion.embeddings import generate_embedding
 from src.ingestion.subject_key import assign_subject_key
 from src.resolution.arbiter import ArbiterClaim, ArbiterInput, arbitrate
-from src.resolution.commit import commit_contested, commit_resolution
+from src.resolution.commit import commit_contested, commit_first_canonical, commit_resolution
 from src.resolution.pipeline import PipelineOutcome, evaluate_new_belief
 from src.resolution.rules import RuleCandidate, RuleOutcome
 from src.resolution.verification import verify_against_ledger
@@ -102,15 +102,28 @@ def ingest(
         detection = evaluate_new_belief(conn, subject_key, embedding, new_candidate, volatility)
 
         if detection.outcome == PipelineOutcome.NO_CANONICAL:
+            # Inserted as 'candidate' first, then promoted via a
+            # version-guarded, 40001-retried write (commit_first_canonical) -
+            # not a blind status='canonical' insert. Two concurrent
+            # first-writes to a brand-new subject would otherwise both
+            # succeed unguarded (this read of expected_version happened in
+            # an already-committed transaction above, so CockroachDB's
+            # serializable isolation can't catch the race on its own), and
+            # search()/get_all() filter on beliefs.status directly - so both
+            # would incorrectly surface as canonical for the same subject.
             belief_id = uuid.uuid4()
             with conn.cursor() as cur:
-                _insert_belief(cur, belief_id, subject_key, claim_text, embedding, agent_id, source_id, confidence, observed_at, "canonical")
-                cur.execute(
-                    "UPDATE subjects SET canonical_belief_id = %s, version = version + 1, updated_at = now() WHERE subject_key = %s",
-                    (belief_id, subject_key),
-                )
+                _insert_belief(cur, belief_id, subject_key, claim_text, embedding, agent_id, source_id, confidence, observed_at, "candidate")
             conn.commit()
-            return IngestResult(belief_id, subject_key, claim_text, "canonical")
+
+            if commit_first_canonical(database_url, subject_key, expected_version, belief_id):
+                return IngestResult(belief_id, subject_key, claim_text, "canonical")
+
+            # Lost the race - someone else became canonical for this subject
+            # first. Resolve this belief against whatever that actually is,
+            # via the same path the resolution_worker Lambda uses for
+            # out-of-band candidates, instead of blindly promoting it.
+            return resolve_pending_candidate(belief_id, database_url)
 
         if detection.outcome == PipelineOutcome.DUPLICATE:
             with conn.cursor() as cur:
@@ -264,18 +277,24 @@ def resolve_pending_candidate(belief_id: uuid.UUID, database_url: str | None = N
             cur.execute("SELECT canonical_belief_id, version, volatility FROM subjects WHERE subject_key = %s", (subject_key,))
             canonical_belief_id, expected_version, volatility = cur.fetchone()
 
-        if canonical_belief_id is None or canonical_belief_id == belief_id:
-            # Race: subject had no canonical (or this belief already is it) by
-            # the time we got here - promote directly, mirroring ingest()'s
-            # NO_CANONICAL branch.
-            with conn.cursor() as cur:
-                cur.execute("UPDATE beliefs SET status = 'canonical' WHERE id = %s", (belief_id,))
-                cur.execute(
-                    "UPDATE subjects SET canonical_belief_id = %s, version = version + 1, updated_at = now() WHERE subject_key = %s",
-                    (belief_id, subject_key),
-                )
-            conn.commit()
+        if canonical_belief_id == belief_id:
+            # Already canonical (a previous poll's commit_first_canonical
+            # succeeded but this belief was re-queued anyway) - nothing to do.
             return IngestResult(belief_id, subject_key, claim_text, "canonical")
+
+        if canonical_belief_id is None:
+            # Subject had no canonical by the time we got here - promote via
+            # the same version-guarded, 40001-retried write ingest()'s
+            # NO_CANONICAL branch uses, not a blind unguarded UPDATE (which
+            # is what used to be here, and could race with a concurrent
+            # promotion the same way ingest()'s old NO_CANONICAL branch could).
+            if commit_first_canonical(database_url, subject_key, expected_version, belief_id):
+                return IngestResult(belief_id, subject_key, claim_text, "canonical")
+            # Lost the race - re-read the real current canonical and fall
+            # through to the normal conflict-resolution logic below.
+            with conn.cursor() as cur:
+                cur.execute("SELECT canonical_belief_id, version FROM subjects WHERE subject_key = %s", (subject_key,))
+                canonical_belief_id, expected_version = cur.fetchone()
 
         new_candidate = RuleCandidate(authority_tier=authority_tier, confidence=float(confidence), observed_at=observed_at)
         detection = evaluate_new_belief(conn, subject_key, embedding, new_candidate, volatility)

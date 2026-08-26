@@ -129,6 +129,55 @@ def commit_resolution(
     raise last_error  # pragma: no cover - unreachable, loop always returns or raises
 
 
+def commit_first_canonical(
+    database_url: str | None,
+    subject_key: str,
+    expected_version: int,
+    belief_id: UUID,
+    max_retries: int = MAX_RETRIES,
+) -> bool:
+    """Promotes belief_id to canonical for a subject with no prior canonical
+    belief (PipelineOutcome.NO_CANONICAL), guarded by the same optimistic
+    version check and SQLSTATE 40001 retry as commit_resolution(). Closes a
+    race where two concurrent first-writes to a brand-new subject could
+    otherwise both blindly set status='canonical' with no version check at
+    all - search()/get_all() filter on beliefs.status directly, so both
+    would incorrectly surface as canonical answers for the same subject.
+
+    Returns False (no exception, no retry) if another belief already became
+    canonical first - the caller should resolve this belief against the real
+    current canonical (e.g. via resolve_pending_candidate()) instead of
+    blindly promoting it.
+    """
+    for attempt in range(1, max_retries + 1):
+        conn = get_connection(database_url)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE subjects
+                    SET version = version + 1, canonical_belief_id = %s, updated_at = now()
+                    WHERE subject_key = %s AND version = %s AND canonical_belief_id IS NULL
+                    RETURNING version
+                    """,
+                    (belief_id, subject_key, expected_version),
+                )
+                if cur.fetchone() is None:
+                    return False
+                cur.execute("UPDATE beliefs SET status = 'canonical' WHERE id = %s", (belief_id,))
+            conn.commit()
+            return True
+        except psycopg2.errors.SerializationFailure:
+            if attempt == max_retries:
+                raise
+            _backoff_sleep(attempt)
+            continue
+        finally:
+            conn.close()
+
+    raise AssertionError("unreachable")  # pragma: no cover - loop always returns or raises
+
+
 def commit_contested(
     database_url: str | None,
     belief_a_id: UUID,

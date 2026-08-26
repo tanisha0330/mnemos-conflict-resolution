@@ -39,6 +39,49 @@ def sources(migrated_db):
     return {"high": high, "low": low, "equal_a": equal_a, "equal_b": equal_b}
 
 
+def test_concurrent_first_writes_to_new_subject_produce_exactly_one_canonical(migrated_db, sources):
+    # Regression test for a real race: two agents racing to be the first
+    # claim about a brand-new subject used to both blindly set
+    # status='canonical' with no version guard at all (unlike every other
+    # commit path). search()/get_all() filter on beliefs.status directly, so
+    # both would have incorrectly surfaced as canonical for the same
+    # subject. Fixed via commit_first_canonical()'s version-guarded,
+    # 40001-retried promote.
+    import threading
+
+    order_id = uuid.uuid4().hex[:8]
+    raw_text = f"Order-{order_id} has shipped via FedEx, tracking number 559213"
+    barrier = threading.Barrier(2)
+    results = [None, None]
+
+    def _ingest(i, agent_id, source_id):
+        barrier.wait()
+        results[i] = ingest(raw_text, agent_id=agent_id, source_id=source_id, database_url=migrated_db)
+
+    t1 = threading.Thread(target=_ingest, args=(0, "fulfillment-agent", sources["high"]))
+    t2 = threading.Thread(target=_ingest, args=(1, "support-agent", sources["low"]))
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    subject_key = results[0].subject_key
+    assert results[1].subject_key == subject_key, "both writes must land on the same subject to actually test the race"
+
+    conn = get_connection(migrated_db)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM beliefs WHERE subject_key = %s AND status = 'canonical'", (subject_key,))
+            canonical_belief_ids = [row[0] for row in cur.fetchall()]
+            cur.execute("SELECT canonical_belief_id FROM subjects WHERE subject_key = %s", (subject_key,))
+            subjects_pointer = cur.fetchone()[0]
+    finally:
+        conn.close()
+
+    assert len(canonical_belief_ids) == 1, f"expected exactly one canonical belief, got {canonical_belief_ids}"
+    assert canonical_belief_ids[0] == subjects_pointer
+
+
 def test_first_belief_for_new_subject_becomes_canonical(migrated_db, sources):
     order_id = uuid.uuid4().hex[:8]
     result = ingest(
