@@ -4,10 +4,19 @@ text (e.g. a mock Stripe/Zendesk payload) via Bedrock."""
 import os
 
 import boto3
+from botocore.config import Config
+
+# Adaptive mode: botocore's client-side rate limiting + retry-with-backoff on
+# throttling and other transient errors. Without this, any Bedrock hiccup
+# under real load crashes ingest() outright - unlike the DB writes, which
+# already retry on SQLSTATE 40001.
+_BEDROCK_RETRY_CONFIG = Config(retries={"max_attempts": 5, "mode": "adaptive"})
 
 
 def _get_client(region_name: str | None = None):
-    return boto3.client("bedrock-runtime", region_name=region_name or os.environ.get("AWS_REGION"))
+    return boto3.client(
+        "bedrock-runtime", region_name=region_name or os.environ.get("AWS_REGION"), config=_BEDROCK_RETRY_CONFIG
+    )
 
 
 def extract_claim_text(raw_text: str, client=None, model_id: str | None = None) -> str:

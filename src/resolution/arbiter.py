@@ -17,10 +17,18 @@ from dataclasses import dataclass
 from datetime import datetime
 
 import boto3
+from botocore.config import Config
 
 MAX_RETRIES_PER_MODEL = 2
 CONFIDENCE_ESCALATION_THRESHOLD = 0.6
 DEFAULT_FALLBACK_MODEL_ID = "anthropic.claude-haiku-4-5-20251001-v1:0"
+
+# Adaptive mode: botocore's client-side rate limiting + retry-with-backoff on
+# throttling and other transient errors. This is separate from
+# MAX_RETRIES_PER_MODEL/the primary->fallback-model retry above it, which
+# only covers malformed model *output*, not transport-level failures like
+# ThrottlingException - those used to crash arbitrate() outright.
+_BEDROCK_RETRY_CONFIG = Config(retries={"max_attempts": 5, "mode": "adaptive"})
 
 VALID_WINNERS = {"A", "B", "neither"}
 VALID_VERDICTS = {"contradiction", "refinement", "temporal_shift", "both_valid"}
@@ -118,7 +126,9 @@ Call record_arbitration_decision with your answer."""
 
 
 def _get_client(region_name: str | None = None):
-    return boto3.client("bedrock-runtime", region_name=region_name or os.environ.get("AWS_REGION"))
+    return boto3.client(
+        "bedrock-runtime", region_name=region_name or os.environ.get("AWS_REGION"), config=_BEDROCK_RETRY_CONFIG
+    )
 
 
 def _call_model(client, model_id: str, prompt: str) -> dict:
